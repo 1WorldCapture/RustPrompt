@@ -7,6 +7,7 @@ pub enum Command {
     Remove(PathBuf),
     ShowContext,
     Copy,
+    Reset,
     Help,
     Quit,
     Unknown(String),

@@ -12,13 +12,21 @@ impl Prompt for CmdPrompt {
     fn render_prompt_left(&self) -> Cow<'_, str> {
         let state = self.app_state.lock().unwrap();
         let file_count = state.file_count;
-        let token_count = state.token_count;
+        let raw_token_count = state.token_count;
+
+        // 转换 token_count 到格式化字符串
+        let token_str = if raw_token_count < 1000 {
+            raw_token_count.to_string()
+        } else {
+            let val = raw_token_count as f64 / 1000.0;
+            format!("{:.1}k", val) // 1.2k
+        };
 
         // 使用 format! 创建 String，然后转换为 Cow
         Cow::Owned(format!(
             "[{}] files | [{}] tokens] > ",
             file_count,
-            token_count
+            token_str // 使用格式化后的字符串
         ))
     }
 

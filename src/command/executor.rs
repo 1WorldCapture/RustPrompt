@@ -100,12 +100,25 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
             }
         }
 
+        Command::Reset => {
+            info!("执行 /reset");
+            let mut st = state.lock().unwrap();
+            st.selected_paths.clear();
+            st.file_count = 0;
+            st.token_count = 0;
+            st.partial_docs.clear();
+            st.cached_xml.clear();
+
+            info!("  -> 已清空所有上下文 (files, partial_docs, token_count)");
+        }
+
         Command::Help => {
             println!("可用命令:");
             println!("  /add <path>");
             println!("  /remove <path>");
             println!("  /context");
             println!("  /copy");
+            println!("  /reset");
             println!("  /help");
             println!("  /quit");
         }

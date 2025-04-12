@@ -28,6 +28,7 @@ pub fn parse(input: &str) -> Result<Command, AppError> {
         }
         "/context" => Ok(Command::ShowContext),
         "/copy" => Ok(Command::Copy),
+        "/reset" => Ok(Command::Reset),
         "/help" => Ok(Command::Help),
         "/quit" => Ok(Command::Quit),
 
