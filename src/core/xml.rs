@@ -1,13 +1,7 @@
 // src/core/xml.rs
 use std::path::{Path, PathBuf};
-use tokio::fs;
-use crate::error::AppError;
-use log::warn; // 用于记录文件读取错误
-use anyhow::anyhow; // 显式导入 anyhow
 use std::collections::HashMap;
 use crate::app::state::PROJECT_TREE_VIRTUAL_PATH;
-use super::tree::generate_project_tree_string;
-use crate::core::ignore_rules::IgnoreConfig;
 
 /// 生成单个文件的 snippet (不包含 <documents> 根标签)
 pub fn generate_single_file_snippet(
@@ -87,7 +81,8 @@ fn replace_doc_index(original: &str, new_index: usize) -> String {
     result
 }
 
-/// 生成XML并返回字符串
+// Removed unused generate_xml function
+/*
 pub async fn generate_xml(paths: &[PathBuf]) -> Result<String, AppError> {
     let mut partial_docs = HashMap::new();
     let ignore_config = IgnoreConfig::default();
@@ -119,4 +114,5 @@ pub async fn generate_xml(paths: &[PathBuf]) -> Result<String, AppError> {
     // 3. 合并所有 snippets
     let merged = merge_all_snippets(&partial_docs);
     Ok(merged)
-} 
+}
+*/ 

@@ -1,7 +1,7 @@
 // src/core/ignore_rules.rs
 
 use std::path::Path;
-use ignore::{WalkBuilder, overrides::OverrideBuilder};
+use ignore::WalkBuilder;
 
 /// 我们的忽略配置：
 /// - 隐藏文件/目录
