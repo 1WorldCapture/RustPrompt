@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
 use reedline::{Prompt, PromptEditMode, PromptHistorySearch};
-use crate::app::state::AppState;
+use crate::app::state::{AppState, ReplMode};
 
 pub struct CmdPrompt {
     pub app_state: Arc<Mutex<AppState>>,
@@ -13,6 +13,7 @@ impl Prompt for CmdPrompt {
         let state = self.app_state.lock().unwrap();
         let file_count = state.file_count;
         let raw_token_count = state.token_count;
+        let current_mode = &state.mode;
 
         // 转换 token_count 到格式化字符串
         let token_str = if raw_token_count < 1000 {
@@ -22,11 +23,18 @@ impl Prompt for CmdPrompt {
             format!("{:.1}k", val) // 1.2k
         };
 
-        // 使用 format! 创建 String，然后转换为 Cow
+        // 根据 ReplMode 确定模式字符串
+        let mode_str = match current_mode {
+            ReplMode::Manual => "manual",
+            ReplMode::Prompt => "prompt",
+        };
+
+        // 使用 format! 创建 String，并包含模式，然后转换为 Cow
         Cow::Owned(format!(
-            "[{}] files | [{}] tokens] > ",
+            "[{}] files | [{}] tokens]({}) > ",
             file_count,
-            token_str // 使用格式化后的字符串
+            token_str, // 使用格式化后的字符串
+            mode_str // 添加模式字符串
         ))
     }
 
