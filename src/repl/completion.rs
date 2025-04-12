@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use log::{debug, info}; // 导入日志宏
 use std::sync::{Arc, Mutex}; // <-- Import Mutex
 use crate::app::state::AppState; // <-- Import AppState
+use crate::core::ignore_rules::IgnoreConfig; // 引入 IgnoreConfig
 
 /// 补全器，支持命令和路径
 pub struct CmdPromptCompleter {
@@ -83,9 +84,10 @@ impl CmdPromptCompleter {
         suggestions
     }
 
-    /// 补全文件路径(只做一层)
+    /// 补全文件路径(只做一层)，并应用忽略规则
     fn suggest_paths(&self, partial_path: &str, span_start: usize, pos: usize) -> Vec<Suggestion> {
         debug!("suggest_paths: partial_path='{}', span_start={}, pos={}", partial_path, span_start, pos);
+        let ignore_config = IgnoreConfig::default(); // 获取默认忽略配置
 
         // 获取当前工作目录作为默认基准
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -115,39 +117,47 @@ impl CmdPromptCompleter {
         let mut suggestions = Vec::new();
 
         if let Ok(entries) = read_dir_result {
-            for entry in entries.flatten() {
-                if let Ok(file_type) = entry.file_type() {
-                    let file_name = entry.file_name().to_string_lossy().to_string();
-                    
-                    // 如果 prefix 为空，或者文件名以 prefix 开头
-                    if prefix.is_empty() || file_name.starts_with(&prefix) {
-                        let mut display_name = file_name;
-                        // 如果是目录，在末尾加上分隔符
-                        if file_type.is_dir() {
-                            display_name.push(std::path::MAIN_SEPARATOR);
-                        }
-                        
-                        // 构造替换后的完整参数值 (包含用户输入的目录部分)
-                        let value_to_insert = {
-                            let path_prefix_typed_by_user = if let Some(idx) = partial_path.rfind(std::path::MAIN_SEPARATOR) {
-                                &partial_path[..=idx]
-                            } else {
-                                ""
-                            };
-                            format!("{}{}", path_prefix_typed_by_user, display_name)
-                        };
-                        
-                        debug!("    -> 匹配到: {}, 插入值: {}", display_name, value_to_insert);
+            for entry_result in entries {
+                if let Ok(entry) = entry_result {
+                    let entry_path = entry.path();
+                    // 应用忽略规则
+                    if ignore_config.should_ignore_path(&entry_path) {
+                        continue;
+                    }
 
-                        suggestions.push(Suggestion {
-                            value: value_to_insert, // 使用构造好的完整相对路径
-                            description: None,
-                            extra: None,
-                            style: None,
-                            // 替换从参数部分的开始到当前光标
-                            span: Span { start: span_start, end: pos }, 
-                            append_whitespace: !file_type.is_dir(), // 文件后加空格，目录后不加
-                        });
+                    if let Ok(file_type) = entry.file_type() {
+                        let file_name = entry.file_name().to_string_lossy().to_string();
+                        
+                        // 如果 prefix 为空，或者文件名以 prefix 开头
+                        if prefix.is_empty() || file_name.starts_with(&prefix) {
+                            let mut display_name = file_name;
+                            // 如果是目录，在末尾加上分隔符
+                            if file_type.is_dir() {
+                                display_name.push(std::path::MAIN_SEPARATOR);
+                            }
+                            
+                            // 构造替换后的完整参数值 (包含用户输入的目录部分)
+                            let value_to_insert = {
+                                let path_prefix_typed_by_user = if let Some(idx) = partial_path.rfind(std::path::MAIN_SEPARATOR) {
+                                    &partial_path[..=idx]
+                                } else {
+                                    ""
+                                };
+                                format!("{}{}", path_prefix_typed_by_user, display_name)
+                            };
+                            
+                            debug!("    -> 匹配到: {}, 插入值: {}", display_name, value_to_insert);
+
+                            suggestions.push(Suggestion {
+                                value: value_to_insert, // 使用构造好的完整相对路径
+                                description: None,
+                                extra: None,
+                                style: None,
+                                // 替换从参数部分的开始到当前光标
+                                span: Span { start: span_start, end: pos }, 
+                                append_whitespace: !file_type.is_dir(), // 文件后加空格，目录后不加
+                            });
+                        }
                     }
                 }
             }

@@ -7,6 +7,7 @@ use anyhow::anyhow; // 显式导入 anyhow
 use std::collections::HashMap;
 use crate::app::state::PROJECT_TREE_VIRTUAL_PATH;
 use super::tree::generate_project_tree_string;
+use crate::core::ignore_rules::IgnoreConfig;
 
 /// 生成单个文件的 snippet (不包含 <documents> 根标签)
 pub fn generate_single_file_snippet(
@@ -89,11 +90,12 @@ fn replace_doc_index(original: &str, new_index: usize) -> String {
 /// 生成XML并返回字符串
 pub async fn generate_xml(paths: &[PathBuf]) -> Result<String, AppError> {
     let mut partial_docs = HashMap::new();
+    let ignore_config = IgnoreConfig::default();
     
     // 1. 生成项目树 snippet
     let current_dir = std::env::current_dir()
         .map_err(|e| AppError::General(anyhow!("无法获取当前目录: {:?}", e)))?;
-    let tree_txt = generate_project_tree_string(&current_dir)?;
+    let tree_txt = generate_project_tree_string(&current_dir, &ignore_config)?;
     let tree_snippet = generate_single_file_snippet(
         Path::new(PROJECT_TREE_VIRTUAL_PATH),
         &tree_txt,

@@ -13,15 +13,18 @@ use crate::{
         xml::{generate_single_file_snippet, merge_all_snippets},
         tree::generate_project_tree_string,
         clipboard,
+        ignore_rules::IgnoreConfig,
     },
     error::AppError,
 };
 
 pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), AppError> {
+    let ignore_config = IgnoreConfig::default();
+
     match cmd {
         Command::Add(path) => {
             info!("执行 /add: {:?}", path);
-            let scanned_files = files::scan_dir(&path).await?;
+            let scanned_files = files::scan_dir(&path, &ignore_config).await?;
             info!("  -> 扫描到 {} 个文件", scanned_files.len());
 
             {
@@ -37,8 +40,8 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
             // (1) 读取真实文件内容并增量更新 snippet
             incrementally_update_real_files(state.clone(), &scanned_files).await?;
 
-            // (2) 更新项目树 snippet（可选：如果需要每次都刷新最新目录结构）
-            update_project_tree_snippet(state.clone()).await?;
+            // (2) 更新项目树 snippet (传递 ignore_config)
+            update_project_tree_snippet(state.clone(), &ignore_config).await?;
 
             // (3) 重新合并 & 计算token
             rebuild_and_recalc(state.clone())?;
@@ -46,7 +49,7 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
 
         Command::Remove(path) => {
             info!("执行 /remove: {:?}", path);
-            let scanned_files = files::scan_dir(&path).await?;
+            let scanned_files = files::scan_dir(&path, &ignore_config).await?;
             info!("  -> 扫描到 {} 个文件 (待移除)", scanned_files.len());
 
             {
@@ -60,8 +63,8 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
                 info!("  -> selected_paths 从 {} 减少到 {} 个", initial_count, st.file_count);
             }
 
-            // (2) 更新项目树 snippet（可选）
-            update_project_tree_snippet(state.clone()).await?;
+            // (2) 更新项目树 snippet (传递 ignore_config)
+            update_project_tree_snippet(state.clone(), &ignore_config).await?;
 
             // (3) 重新合并 & 计算token
             rebuild_and_recalc(state.clone())?;
@@ -89,7 +92,6 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
             {
                 let mut st = state.lock().unwrap();
                 // 清空 partial_docs 里的真实文件相关 snippet
-                // 只保留 "__PROJECT_TREE__" 那条(若想继续用)
                 let tree_snip = st.partial_docs.remove(&PathBuf::from(PROJECT_TREE_VIRTUAL_PATH));
                 st.partial_docs.clear();
                 if let Some(tree) = tree_snip {
@@ -99,8 +101,8 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
 
             // 2) 重新生成真实文件 snippet
             incrementally_update_real_files(state.clone(), &all_paths).await?;
-            // 3) 重新生成/更新项目树 snippet
-            update_project_tree_snippet(state.clone()).await?;
+            // 3) 重新生成/更新项目树 snippet (传递 ignore_config)
+            update_project_tree_snippet(state.clone(), &ignore_config).await?;
             // 4) rebuild & recalc
             rebuild_and_recalc(state.clone())?;
 
@@ -157,10 +159,13 @@ async fn incrementally_update_real_files(
     Ok(())
 }
 
-/// 生成/刷新 项目树 snippet，并存入 partial_docs
-async fn update_project_tree_snippet(state: Arc<Mutex<AppState>>) -> Result<(), AppError> {
+/// 生成/刷新 项目树 snippet，并存入 partial_docs (现在需要 ignore_config)
+async fn update_project_tree_snippet(
+    state: Arc<Mutex<AppState>>,
+    ignore_config: &IgnoreConfig
+) -> Result<(), AppError> {
     let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let tree_txt = generate_project_tree_string(&current_dir).unwrap_or_default();
+    let tree_txt = generate_project_tree_string(&current_dir, ignore_config).unwrap_or_default();
     let snippet = generate_single_file_snippet(
         Path::new(PROJECT_TREE_VIRTUAL_PATH),
         &tree_txt,
