@@ -7,11 +7,12 @@ use crate::app::state::PROJECT_TREE_VIRTUAL_PATH;
 pub fn generate_single_file_snippet(
     path: &Path,
     content: &str,
-    index: usize,
+    index: usize, // 临时索引，在 merge 时会被替换
 ) -> String {
     let path_str = path.to_string_lossy();
+    // 使用原始字符串简化转义
     format!(
-r#"<document index="{idx}">
+        r#"<document index="{idx}">
 <source>{src}</source>
 <document_content>
 {body}
@@ -23,8 +24,8 @@ r#"<document index="{idx}">
     )
 }
 
-/// 合并 partial_docs 里的 snippet，生成完整的 <documents>...</documents> XML。
-/// 其中: 
+/// 合并 partial_docs 里的 snippet，生成完整的 <documents>... XML。
+/// 其中:
 ///   - __PROJECT_TREE__ 对应的 snippet 被视为 index=1
 ///   - 其余文档按路径排序后，从 index=2 开始
 pub fn merge_all_snippets(partial_docs: &HashMap<PathBuf, String>) -> String {
@@ -38,7 +39,7 @@ pub fn merge_all_snippets(partial_docs: &HashMap<PathBuf, String>) -> String {
         .filter(|(k, _)| **k != tree_key) // 过滤掉项目树
         .collect();
 
-    // 以路径字符串排序
+    // 以路径字符串排序，确保一致性
     real_files.sort_by(|a, b| a.0.cmp(&b.0));
 
     // 3) 开始拼装
@@ -50,7 +51,7 @@ pub fn merge_all_snippets(partial_docs: &HashMap<PathBuf, String>) -> String {
         // 强行把它当成 index=1
         let updated = replace_doc_index(tree_snip, 1);
         result.push_str(&updated);
-        result.push('\n');
+        result.push('\n'); // 每个 snippet 后加换行
     }
 
     // 3.2) 依次给真实文件 snippet 分配 index=2,3,...
@@ -58,7 +59,7 @@ pub fn merge_all_snippets(partial_docs: &HashMap<PathBuf, String>) -> String {
     for (_, snip) in real_files {
         let updated = replace_doc_index(snip, doc_index);
         result.push_str(&updated);
-        result.push('\n');
+        result.push('\n'); // 每个 snippet 后加换行
         doc_index += 1;
     }
 
@@ -67,14 +68,18 @@ pub fn merge_all_snippets(partial_docs: &HashMap<PathBuf, String>) -> String {
 }
 
 /// 将 snippet 里的 index="X" 替换为 index="new_index"
+/// 使用字符串查找和替换，避免引入 XML 解析库的复杂性
 fn replace_doc_index(original: &str, new_index: usize) -> String {
     let mut result = original.to_string();
     let pattern_start = r#"index=""#;
     if let Some(pos) = result.find(pattern_start) {
         let start_idx = pos + pattern_start.len();
+        // 从 start_idx 开始查找第一个 "
         if let Some(end_quote) = result[start_idx..].find('"') {
             let end_idx = start_idx + end_quote;
-            let new_str = format!("{}", new_index);
+            // 构造新的 index 字符串
+            let new_str = new_index.to_string();
+            // 替换范围
             result.replace_range(start_idx..end_idx, &new_str);
         }
     }

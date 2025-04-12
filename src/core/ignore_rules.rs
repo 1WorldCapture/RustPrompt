@@ -3,17 +3,12 @@
 use std::path::Path;
 use ignore::WalkBuilder;
 
-/// 我们的忽略配置：
-/// - 隐藏文件/目录
-/// - .gitignore 文件
-/// - node_modules (可选)
-/// 后续还可以在这里加更多自定义规则
+/// 忽略配置：管理隐藏文件/.gitignore/node_modules等
 #[derive(Debug, Clone)]
 pub struct IgnoreConfig {
-    pub ignore_hidden: bool,         // 是否忽略隐藏文件
-    pub use_gitignore: bool,         // 是否读取 .gitignore
-    pub ignore_node_modules: bool,   // 是否忽略 node_modules
-    // 还可加入更多选项
+    pub ignore_hidden: bool,
+    pub use_gitignore: bool,
+    pub ignore_node_modules: bool,
 }
 
 impl Default for IgnoreConfig {
@@ -33,51 +28,40 @@ impl IgnoreConfig {
     pub fn build_walker(&self, root: &Path) -> WalkBuilder {
         let mut builder = WalkBuilder::new(root);
 
-        // 是否忽略隐藏文件
         builder.hidden(self.ignore_hidden);
 
-        // 是否启用 .gitignore
         if self.use_gitignore {
             builder.git_ignore(true).git_exclude(true).git_global(true);
         } else {
             builder.git_ignore(false).git_exclude(false).git_global(false);
         }
-        
-        // 简单方式忽略 node_modules: 添加一个忽略模式
         if self.ignore_node_modules {
-            // 相对路径模式
-            builder.add_ignore("node_modules");
+            // 添加忽略模式，确保在所有子目录中都生效
+            builder.add_ignore("**/node_modules");
+            builder.add_ignore("node_modules"); // 也覆盖根目录下的
         }
-
-        // 使用标准过滤规则 (如 .git, *.bak 等)
         builder.standard_filters(true);
 
         builder
     }
 
-    /// 是否忽略单个 Path （可选）
-    /// 主要用于自定义DFS/BFS 或单文件判断
+    /// 检查单个路径是否应该被忽略 (基于配置，但不解析 .gitignore)
     pub fn should_ignore_path(&self, path: &Path) -> bool {
-        // 1) 检查是否为隐藏(如果 ignore_hidden=true)
         if self.ignore_hidden {
             if let Some(name) = path.file_name() {
-                if name.to_string_lossy().starts_with(".") {
+                if name.to_string_lossy().starts_with('.') {
+                    // 对于 Unix 隐藏文件
                     return true;
                 }
             }
+            // 可选: 添加 Windows 隐藏文件检查 (需要额外 crate 或 cfg)
         }
-
-        // 2) 是否是 node_modules
         if self.ignore_node_modules {
             if path.components().any(|c| c.as_os_str() == "node_modules") {
                 return true;
             }
         }
-
-        // 注意：这里没有处理 .gitignore，因为这需要解析文件。
-        // WalkBuilder 已经处理了 .gitignore。
-        // 如果你需要完全独立的判断，需要引入 gitignore 解析库。
-
-        false // 默认不忽略
+        // 注意: 此方法不处理 .gitignore。完整的忽略判断依赖于 WalkBuilder
+        false
     }
 } 
