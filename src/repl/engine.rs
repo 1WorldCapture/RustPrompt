@@ -9,7 +9,7 @@ use anyhow::Result;
 
 use crate::{
     app::state::AppState,
-    command::{parser, executor},
+    command::{parser, executor, definition::Command},
     repl::{
         prompt::CmdPrompt,
         completion::CmdPromptCompleter,
@@ -82,7 +82,26 @@ impl ReplEngine {
                     if buffer.trim().is_empty() {
                         continue;
                     }
-                    // 尝试解析命令
+
+                    // 如果当前模式是 Prompt 并且没有以'/'开头，就当做 AppendPromptText
+                    let mut is_prompt_input = false;
+                    {
+                        let st = self.app_state.lock().unwrap();
+                        if st.mode == crate::app::state::ReplMode::Prompt && !buffer.starts_with('/') {
+                            is_prompt_input = true;
+                        }
+                        // Lock is dropped here
+                    }
+
+                    if is_prompt_input {
+                        let cmd = Command::AppendPromptText(buffer);
+                        if let Err(e) = executor::execute(cmd, self.app_state.clone()).await {
+                            eprintln!("执行命令时出错: {}", e);
+                        }
+                        continue; // 跳过常规 parse()
+                    }
+
+                    // 否则，正常解析和执行命令
                     match parser::parse(&buffer) {
                         Ok(cmd) => {
                             // 执行命令
@@ -90,7 +109,7 @@ impl ReplEngine {
                                 eprintln!("执行命令时出错: {}", e);
                             }
                             // 特殊处理 Quit 命令以停止循环
-                            if matches!(cmd, crate::command::definition::Command::Quit) {
+                            if matches!(cmd, Command::Quit) {
                                 self.running = false;
                             }
                         }

@@ -5,7 +5,7 @@ use log::info;
 use anyhow::Result;
 
 use crate::{
-    app::state::AppState,
+    app::state::{AppState, ReplMode},
     app::snippet_manager::SnippetManager,
     command::definition::Command,
     core::{files_scanner, ignore_rules::IgnoreConfig, clipboard},
@@ -89,13 +89,26 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
 
             SnippetManager::full_refresh(state.clone(), paths, &ignore_config).await?;
 
-            let xml = {
-                let st = state.lock().unwrap();
-                st.cached_xml.clone()
+            let xml_to_copy = {
+                let mut st = state.lock().unwrap();
+                let mut final_xml = st.cached_xml.clone();
+
+                if !st.prompt_text.is_empty() {
+                    let instruction_tag = format!("\n<instruction>\n{}\n</instruction>", st.prompt_text);
+
+                    if let Some(idx) = final_xml.rfind("</documents>") {
+                        final_xml.insert_str(idx, &instruction_tag);
+                    } else {
+                        final_xml.push_str(&instruction_tag);
+                        final_xml.push_str("\n</documents>");
+                    }
+                    st.cached_xml = final_xml.clone();
+                }
+                final_xml
             };
 
-            match clipboard::copy_to_clipboard(&xml) {
-                Ok(_) => println!("(提示) 已将选中的内容(含项目树)复制到剪贴板!"),
+            match clipboard::copy_to_clipboard(&xml_to_copy) {
+                Ok(_) => println!("(提示) 已将选中的内容(含项目树 + instruction)复制到剪贴板!"),
                 Err(e) => eprintln!("复制到剪贴板失败: {:?}", e),
             }
         }
@@ -108,8 +121,9 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
             st.token_count = 0;
             st.partial_docs.clear();
             st.cached_xml.clear();
+            st.prompt_text.clear();
 
-            info!("  -> 已清空所有上下文 (files, partial_docs, token_count)");
+            info!("  -> 已清空所有上下文 (files, partial_docs, token_count, prompt_text)");
         }
 
         Command::Help => {
@@ -119,8 +133,12 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
             println!("  /context");
             println!("  /copy");
             println!("  /reset");
+            println!("  /mode [manual|prompt]  - 查看或切换模式");
+            println!("  /prompt              - 查看当前提示词 (prompt模式下生效)");
             println!("  /help");
             println!("  /quit");
+            println!("\n在 prompt 模式下:");
+            println!("  直接输入内容会被追加到提示词中。");
         }
 
         Command::Quit => {
@@ -129,6 +147,52 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
 
         Command::Unknown(u) => {
             println!("未知命令: {}", u);
+        }
+
+        Command::Mode(opt) => {
+            let mut st = state.lock().unwrap();
+            match opt {
+                None => {
+                    match st.mode {
+                        ReplMode::Manual => println!("当前模式: manual"),
+                        ReplMode::Prompt => println!("当前模式: prompt"),
+                    }
+                }
+                Some(m) => {
+                    let mode_str = m.to_lowercase();
+                    if mode_str == "manual" {
+                        st.mode = ReplMode::Manual;
+                        println!("已切换到 manual 模式");
+                    } else if mode_str == "prompt" {
+                        st.mode = ReplMode::Prompt;
+                        println!("已切换到 prompt 模式");
+                    } else {
+                        println!("未知模式: {} (可用: manual, prompt)", m);
+                    }
+                }
+            }
+        }
+
+        Command::Prompt => {
+            let st = state.lock().unwrap();
+            if st.mode == ReplMode::Prompt {
+                println!("(提示) 当前 prompt_text:\n{}", st.prompt_text);
+            } else {
+                println!("(提示) /prompt 命令仅在 prompt 模式下查看提示词。当前为 manual 模式。");
+            }
+        }
+
+        Command::AppendPromptText(line) => {
+            let mut st = state.lock().unwrap();
+            if st.mode == ReplMode::Prompt {
+                if !st.prompt_text.is_empty() {
+                    st.prompt_text.push('\n');
+                }
+                st.prompt_text.push_str(&line);
+                println!("(提示) 已添加到提示词");
+            } else {
+                eprintln!("内部错误：尝试在非 prompt 模式下追加提示词。");
+            }
         }
     }
 

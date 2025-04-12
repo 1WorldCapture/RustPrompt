@@ -4,6 +4,12 @@ use std::path::PathBuf;
 /// 虚拟路径常量，用作项目目录树的唯一 key
 pub const PROJECT_TREE_VIRTUAL_PATH: &str = "__PROJECT_TREE__";
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReplMode {
+    Manual,
+    Prompt,
+}
+
 /// 全局共享状态
 pub struct AppState {
     /// 已选中的真实文件路径
@@ -20,6 +26,12 @@ pub struct AppState {
 
     /// 最终合并得到的完整XML
     pub cached_xml: String,
+
+    /// 当前模式: manual or prompt
+    pub mode: ReplMode,
+
+    /// prompt模式下收集到的提示词 (可多行或单行)
+    pub prompt_text: String,
 }
 
 impl AppState {
@@ -30,6 +42,8 @@ impl AppState {
             token_count: 0,
             partial_docs: HashMap::new(),
             cached_xml: String::new(),
+            mode: ReplMode::Manual,
+            prompt_text: String::new(),
         }
     }
 } 
