@@ -21,11 +21,16 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
                 for f in scanned_files.iter() {
                     st.selected_paths.insert(f.clone());
                 }
-                info!("  -> AppState.selected_paths 从 {} 增加到 {} 个", initial_count, st.selected_paths.len());
+                let new_count = st.selected_paths.len(); // MOD: 获取更新后的数量
+                info!("  -> AppState.selected_paths 从 {} 增加到 {} 个", initial_count, new_count);
+
+                // MOD: 现在只更新文件数，不再重新计算 token_count
+                st.file_count = new_count;
+                // st.token_count 保持不变
             }
 
-            // 3. 重新计算 file_count & token_count
-            recalc_file_and_tokens(state.clone()).await?;
+            // MOD: 不再调用 recalc_file_and_tokens
+            // recalc_file_and_tokens(state.clone()).await?;
         }
 
         Command::Remove(path) => {
@@ -41,11 +46,16 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
                 for f in scanned_files.iter() {
                     st.selected_paths.remove(f);
                 }
-                 info!("  -> AppState.selected_paths 从 {} 减少到 {} 个", initial_count, st.selected_paths.len());
+                 let new_count = st.selected_paths.len(); // MOD: 获取更新后的数量
+                 info!("  -> AppState.selected_paths 从 {} 减少到 {} 个", initial_count, new_count);
+
+                 // MOD: 同样只更新文件数
+                 st.file_count = new_count;
+                 // st.token_count 保持不变
             }
 
-            // 3. 重新计算 file_count & token_count
-            recalc_file_and_tokens(state.clone()).await?;
+            // MOD: 不再调用 recalc_file_and_tokens
+            // recalc_file_and_tokens(state.clone()).await?;
         }
 
         Command::ShowContext => {
@@ -58,33 +68,38 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
                     println!(" - {:?}", p);
                 }
             }
-            println!("当前 file_count = {}, token_count = {}", st.file_count, st.token_count);
+            // MOD: 显示的 token_count 是最后一次 copy 的结果
+            println!("当前 file_count = {}, token_count = {} (来自上次 /copy)", st.file_count, st.token_count);
         }
 
         Command::Copy => {
-            // 核心实现：读取所有选中文件 => 生成XML => 复制到剪贴板
+            // 核心实现：读取所有选中文件 => 生成XML(含项目树) => 复制到剪贴板 => 计算XML的Token并更新
             info!("执行 /copy");
 
             // 1. 收集当前选中文件 (锁 state)
             let all_files: Vec<PathBuf> = {
                 let st = state.lock().unwrap();
                 if st.selected_paths.is_empty() {
-                    println!("(提示) 当前未选中文件，无法复制空XML。");
-                    return Ok(());
+                    println!("(提示) 当前未选中文件，但仍会生成包含项目树的XML。");
+                    // 可以选择返回错误或继续生成仅含项目树的XML
                 }
                 st.selected_paths.iter().cloned().collect()
             };
 
             // 2. 生成 XML (异步)
-            info!("  -> 开始生成包含 {} 个文件的 XML...", all_files.len());
+            info!("  -> 开始生成包含项目树和 {} 个文件的 XML...", all_files.len());
             let xml_str = xml::generate_xml(&all_files).await?;
             info!("  -> XML 生成完毕，长度: {}", xml_str.len());
+
+            // NEW: 用刚生成的整个 XML 字符串计算 Token 数
+            let xml_token_count = tokenizer::calculate_tokens_in_string(&xml_str)?;
+            info!("  -> 计算得到 XML Token 数: {}", xml_token_count);
 
             // 3. 复制到剪贴板 (同步API，可能快)
             info!("  -> 尝试复制到剪贴板...");
             match clipboard::copy_to_clipboard(&xml_str) {
                 Ok(_) => {
-                    println!("已将选中文件的XML复制到剪贴板。");
+                    println!("已将选中文件+目录树的XML复制到剪贴板。");
                     info!("  -> 复制成功!");
                 }
                 Err(e) => {
@@ -93,14 +108,26 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
                     return Err(e);
                 }
             }
+
+            // MOD: 最后更新 AppState 的 token_count 为 XML 的 Token 数
+            {
+                let mut st = state.lock().unwrap();
+                st.token_count = xml_token_count;
+                // st.file_count 保持不变，它由 add/remove 更新
+                info!("  -> AppState 更新完毕: file_count={}, token_count={}", st.file_count, st.token_count);
+            }
+
+            // NEW: 提示用户本次拷贝的 Token 数
+            println!("提示: 本次复制的XML共 {} 个 Tokens，现在提示符会显示该值。", xml_token_count);
+
         }
 
         Command::Help => {
             println!("可用命令：");
             println!("  /add <path>      选中文件或文件夹");
             println!("  /remove <path>   移除已选文件或文件夹");
-            println!("  /context         查看当前选中的文件和目录 (包括文件数和 Token 数)");
-            println!("  /copy            将选中内容打包为 XML 并复制到剪贴板");
+            println!("  /context         查看当前选中的文件和目录 (文件数 | 上次 /copy 的 Token 数)"); // MOD: 更新说明
+            println!("  /copy            将选中内容(含项目树)打包为 XML, 复制到剪贴板, 并更新 Token 数"); // MOD: 更新说明
             println!("  /help            查看帮助");
             println!("  /quit            退出");
         }
@@ -118,6 +145,8 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
     Ok(())
 }
 
+// MOD: 不再需要这个函数，Token 计算移到 /copy 逻辑中
+/*
 /// 重新计算所有已选文件的计数与 token 数，将结果更新到 state
 async fn recalc_file_and_tokens(state: Arc<Mutex<AppState>>) -> Result<(), AppError> {
     info!("开始重新计算 file_count 和 token_count...");
@@ -140,4 +169,5 @@ async fn recalc_file_and_tokens(state: Arc<Mutex<AppState>>) -> Result<(), AppEr
         info!("  -> AppState 更新完毕: file_count={}, token_count={}", st.file_count, st.token_count);
     }
     Ok(())
-} 
+}
+*/ 
