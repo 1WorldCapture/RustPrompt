@@ -11,3 +11,7 @@ anyhow = "1"
 thiserror = "2.0.12"
 tokio = { version = "1.28", features = ["macros", "rt-multi-thread"] }
 reedline = "0.39.0"
+
+# 添加日志依赖
+log = "0.4"
+env_logger = "0.11"

@@ -1,6 +1,10 @@
 use std::sync::{Arc, Mutex};
 
-use reedline::{Reedline, Signal};
+use reedline::{
+    ColumnarMenu, Emacs, KeyCode, KeyModifiers, Reedline, ReedlineEvent, ReedlineMenu, Signal, 
+    default_emacs_keybindings, // 用于获取默认绑定
+    MenuBuilder // <--- 导入 MenuBuilder trait
+};
 use anyhow::Result;
 
 use crate::{
@@ -25,9 +29,31 @@ pub struct ReplEngine {
 
 impl ReplEngine {
     pub fn new(app_state: Arc<Mutex<AppState>>) -> Self {
-        // 直接创建编辑器，并设置补全器
+        // 1. 创建 Completer
+        let completer = Box::new(CmdPromptCompleter {}); 
+
+        // 2. 创建菜单 (用于显示补全)，并命名
+        let completion_menu = Box::new(ColumnarMenu::default().with_name("completion_menu"));
+
+        // 3. 配置键位绑定 (让 Tab 触发菜单)
+        let mut keybindings = default_emacs_keybindings();
+        keybindings.add_binding(
+            KeyModifiers::NONE, // 无需修饰键 (如 Shift, Ctrl)
+            KeyCode::Tab,       // Tab 键
+            ReedlineEvent::UntilFound(vec![ // 尝试一系列事件直到成功
+                ReedlineEvent::Menu("completion_menu".to_string()), // 保持菜单名称引用，内部会处理
+                ReedlineEvent::MenuNext, // 如果菜单已打开，则选择下一项
+            ]),
+        );
+
+        // 4. 创建 Emacs 编辑模式，并传入修改后的键位绑定
+        let edit_mode = Box::new(Emacs::new(keybindings));
+
+        // 5. 创建 Reedline 实例，并配置所有组件
         let editor = Reedline::create()
-            .with_completer(Box::new(CmdPromptCompleter {}));
+            .with_completer(completer) // 注册补全器
+            .with_menu(ReedlineMenu::EngineCompleter(completion_menu)) // 注册菜单
+            .with_edit_mode(edit_mode); // 注册编辑模式 (包含自定义的 Tab 绑定)
 
         // 创建 Prompt 对象
         let prompt = CmdPrompt {
