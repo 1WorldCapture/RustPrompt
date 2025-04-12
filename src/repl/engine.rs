@@ -29,8 +29,10 @@ pub struct ReplEngine {
 
 impl ReplEngine {
     pub fn new(app_state: Arc<Mutex<AppState>>) -> Self {
-        // 1. 创建 Completer
-        let completer = Box::new(CmdPromptCompleter {}); 
+        // 1. 创建 Completer, 传入 app_state
+        let completer = Box::new(CmdPromptCompleter {
+             app_state: app_state.clone(), // <-- Pass AppState here
+        });
 
         // 2. 创建菜单 (用于显示补全)，并命名
         let completion_menu = Box::new(ColumnarMenu::default().with_name("completion_menu"));
@@ -51,7 +53,7 @@ impl ReplEngine {
 
         // 5. 创建 Reedline 实例，并配置所有组件
         let editor = Reedline::create()
-            .with_completer(completer) // 注册补全器
+            .with_completer(completer) // Use the new completer instance
             .with_menu(ReedlineMenu::EngineCompleter(completion_menu)) // 注册菜单
             .with_edit_mode(edit_mode); // 注册编辑模式 (包含自定义的 Tab 绑定)
 

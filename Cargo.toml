@@ -7,11 +7,15 @@ edition = "2021"
 crossterm = "0.29.0"
 ratatui = "0.29.0"
 
-anyhow = "1"
+anyhow = "1.0"
 thiserror = "2.0.12"
-tokio = { version = "1.28", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 reedline = "0.39.0"
 
 # 添加日志依赖
 log = "0.4"
 env_logger = "0.11"
+
+# Sprint 2 新增依赖
+ignore = "0.4"
+tiktoken-rs = { version = "0.6.0", features=["async-openai"] }

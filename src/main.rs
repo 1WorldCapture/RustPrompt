@@ -12,6 +12,7 @@ mod app;
 mod command;
 mod error;
 mod repl;
+mod core;
 
 /// 程序入口点
 fn main() -> Result<()> {
