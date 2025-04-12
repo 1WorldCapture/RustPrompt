@@ -18,51 +18,61 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
     match cmd {
         Command::Add(path) => {
             info!("执行 /add: {:?}", path);
-            let scanned_files = files_scanner::scan_dir(&path, &ignore_config).await?;
-            info!("  -> 扫描到 {} 个文件 (非忽略)", scanned_files.len());
 
-            {
+            let scanned = files_scanner::scan_dir(&path, &ignore_config).await?;
+            info!("  -> 扫描到 {} 个文件", scanned.len());
+
+            let num_added = {
                 let mut st = state.lock().unwrap();
-                let initial_count = st.selected_paths.len();
-                for f in &scanned_files {
+                let init_count = st.selected_paths.len();
+                for f in &scanned {
                     st.selected_paths.insert(f.clone());
                 }
-                st.file_count = st.selected_paths.len();
-                info!("  -> selected_paths 从 {} 增加到 {} 个", initial_count, st.file_count);
+                let final_count = st.selected_paths.len();
+                st.file_count = final_count;
+                info!("  -> selected_paths 从 {} 增到 {}", init_count, final_count);
+                final_count - init_count
+            };
+
+            if num_added > 0 || scanned.is_empty() {
+                SnippetManager::add_files_snippet(state.clone(), scanned).await?;
+                SnippetManager::update_project_tree_snippet(state.clone(), &ignore_config)?;
+                SnippetManager::rebuild_and_recalc(state.clone())?;
+            } else {
+                info!("  -> 没有新文件被添加，跳过 snippet 更新");
             }
-
-            SnippetManager::add_files_snippet(state.clone(), scanned_files).await?;
-
-            SnippetManager::update_project_tree_snippet(state.clone(), &ignore_config)?;
-
-            SnippetManager::rebuild_and_recalc(state.clone())?;
         }
 
         Command::Remove(path) => {
             info!("执行 /remove: {:?}", path);
-            let scanned_files = files_scanner::scan_dir(&path, &ignore_config).await?;
-            info!("  -> 扫描到 {} 个文件 (待移除)", scanned_files.len());
 
-            {
+            let scanned = files_scanner::scan_dir(&path, &ignore_config).await?;
+            info!("  -> 扫描到 {} 个文件 (待移除)", scanned.len());
+
+            let num_removed = {
                 let mut st = state.lock().unwrap();
-                let initial_count = st.selected_paths.len();
-                for f in &scanned_files {
+                let init_count = st.selected_paths.len();
+                for f in &scanned {
                     st.selected_paths.remove(f);
                     st.partial_docs.remove(f);
                 }
-                st.file_count = st.selected_paths.len();
-                info!("  -> selected_paths 从 {} 减少到 {} 个", initial_count, st.file_count);
+                let final_count = st.selected_paths.len();
+                st.file_count = final_count;
+                info!("  -> selected_paths 从 {} 减到 {}", init_count, final_count);
+                init_count - final_count
+            };
+
+            if num_removed > 0 {
+                SnippetManager::update_project_tree_snippet(state.clone(), &ignore_config)?;
+                SnippetManager::rebuild_and_recalc(state.clone())?;
+            } else {
+                info!("  -> 没有文件被移除，跳过 snippet 更新");
             }
-
-            SnippetManager::update_project_tree_snippet(state.clone(), &ignore_config)?;
-
-            SnippetManager::rebuild_and_recalc(state.clone())?;
         }
 
         Command::ShowContext => {
             let st = state.lock().unwrap();
-            println!("当前已选文件数量: {}", st.file_count);
-            println!("当前 token_count: {}", st.token_count);
+            println!("当前 file_count={}, token_count={}", st.file_count, st.token_count);
             println!("已选文件列表:");
             for p in &st.selected_paths {
                 println!(" - {:?}", p);
@@ -72,26 +82,26 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
         Command::Copy => {
             info!("执行 /copy (全量刷新)");
 
-            let all_paths: Vec<PathBuf> = {
+            let paths: Vec<PathBuf> = {
                 let st = state.lock().unwrap();
                 st.selected_paths.iter().cloned().collect()
             };
 
-            SnippetManager::full_refresh(state.clone(), all_paths, &ignore_config).await?;
+            SnippetManager::full_refresh(state.clone(), paths, &ignore_config).await?;
 
-            let xml_to_copy = {
+            let xml = {
                 let st = state.lock().unwrap();
                 st.cached_xml.clone()
             };
-            if let Err(e) = clipboard::copy_to_clipboard(&xml_to_copy) {
-                eprintln!("复制到剪贴板失败: {}", e);
-            } else {
-                println!("已将选中的内容(含项目树)复制到剪贴板!");
+
+            match clipboard::copy_to_clipboard(&xml) {
+                Ok(_) => println!("(提示) 已将选中的内容(含项目树)复制到剪贴板!"),
+                Err(e) => eprintln!("复制到剪贴板失败: {:?}", e),
             }
         }
 
         Command::Help => {
-            println!("可用命令：");
+            println!("可用命令:");
             println!("  /add <path>");
             println!("  /remove <path>");
             println!("  /context");
@@ -101,11 +111,11 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
         }
 
         Command::Quit => {
-            println!("收到 /quit 命令，即将退出。");
+            println!("(提示) 即将退出...");
         }
 
-        Command::Unknown(s) => {
-            println!("未知命令: {}", s);
+        Command::Unknown(u) => {
+            println!("未知命令: {}", u);
         }
     }
 

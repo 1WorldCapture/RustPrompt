@@ -17,21 +17,23 @@ use crate::{
 pub struct SnippetManager;
 
 impl SnippetManager {
-    /// 增量添加文件 snippet (读取IO后写入 AppState.partial_docs)
+    /// 增量添加文件 snippet
+    ///  - 先在锁外读取文件内容，生成 snippet
+    ///  - 然后在锁内写入 partial_docs
     pub async fn add_files_snippet(
         state: Arc<Mutex<AppState>>,
-        files: Vec<PathBuf>, // 修改为 Vec<PathBuf> 以匹配 executor 调用
+        files: Vec<PathBuf>,
     ) -> Result<(), AppError> {
-        // 1) 读取文件内容(锁外)
+        // 1) 读取文件内容(在锁外, 避免阻塞 REPL)
         let mut new_snips = Vec::with_capacity(files.len());
-        for f in files {
-            let content = fs::read_to_string(&f).await.unwrap_or_default();
-            // 暂时给 snippet 用 index=0, 后续 merge_all_snippets 会统一替换
-            let snippet = generate_single_file_snippet(&f, &content, 0);
-            new_snips.push((f, snippet));
+        for f in &files { // Borrow files instead of consuming
+            // 可以考虑 tokio::task::spawn_blocking，如果文件很多或很大
+            let content = fs::read_to_string(f).await.unwrap_or_default();
+            let snippet = generate_single_file_snippet(f, &content, 0);
+            new_snips.push((f.clone(), snippet)); // Clone f here
         }
 
-        // 2) 上锁，写入 partial_docs
+        // 2) 上锁: 将结果写入 partial_docs
         {
             let mut st = state.lock().unwrap();
             for (path, snip) in new_snips {
@@ -42,23 +44,23 @@ impl SnippetManager {
         Ok(())
     }
 
-    /// 更新(或重新生成)项目树 snippet，并放入 partial_docs
+    /// 更新/重新生成项目树 snippet，并存入 partial_docs
+    ///  - tree_builder 本身可能比较耗时, 可以考虑 spawn_blocking
     pub fn update_project_tree_snippet(
         state: Arc<Mutex<AppState>>,
         ignore_config: &IgnoreConfig,
     ) -> Result<(), AppError> {
-        // 1) 生成树字符串(不需锁)
-        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")); // Handle error better
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        // 如果项目很大, generate_project_tree_string 可能耗时
+        // 考虑优化: let tree_txt = tokio::task::spawn_blocking(...).await??;
         let tree_txt = generate_project_tree_string(&current_dir, ignore_config)
             .unwrap_or_else(|e| {
-                log::error!("生成项目树失败: {:?}", e); // Log error
+                log::error!("生成项目树失败: {:?}", e);
                 "".to_string()
             });
 
-        // 2) 生成 snippet
         let snippet = generate_single_file_snippet(Path::new(PROJECT_TREE_VIRTUAL_PATH), &tree_txt, 0);
 
-        // 3) 上锁写入 partial_docs
         {
             let mut st = state.lock().unwrap();
             st.partial_docs.insert(PathBuf::from(PROJECT_TREE_VIRTUAL_PATH), snippet);
@@ -68,41 +70,60 @@ impl SnippetManager {
     }
 
     /// 重建合并 + 计算token
+    ///  - 在锁内进行，合并和token计算本身不算大IO
     pub fn rebuild_and_recalc(state: Arc<Mutex<AppState>>) -> Result<(), AppError> {
         let mut st = state.lock().unwrap();
         let merged = merge_all_snippets(&st.partial_docs);
-        let tokens = calculate_tokens_in_string(&merged)?; // 计算前先合并
-        st.cached_xml = merged; // 在计算后赋值
+        let tokens = calculate_tokens_in_string(&merged)?;
+        st.cached_xml = merged;
         st.token_count = tokens;
         Ok(())
     }
 
-    /// 全量刷新：清空除项目树外的 snippet，重新生成所有 + 更新项目树 + 重建合并
-    /// 注意：这里是一次性函数，用在 /copy 等命令
+    /// 全量刷新: 清空除项目树外的 snippet -> 重新生成 -> 更新树 -> 计算 token
+    ///  - 在锁外进行文件IO
     pub async fn full_refresh(
         state: Arc<Mutex<AppState>>,
         all_paths: Vec<PathBuf>,
         ignore_config: &IgnoreConfig,
     ) -> Result<(), AppError> {
-        // 1) 保留原先 project_tree 的 snippet, 其余清空
+        // 1) 先清空 old snippet (在锁内，快速操作)
         {
             let mut st = state.lock().unwrap();
-            let tree_snip = st.partial_docs.remove(&PathBuf::from(PROJECT_TREE_VIRTUAL_PATH));
-            st.partial_docs.clear(); // 清空所有，包括旧树（如果存在）
-            if let Some(snip) = tree_snip {
-                // 重新插入，确保总是有一个树的位置（即使是旧的，后面会更新）
-                st.partial_docs.insert(PathBuf::from(PROJECT_TREE_VIRTUAL_PATH), snip);
-            }
+            st.partial_docs.clear(); // 清空所有真实文件 snippet
+            // 暂时不写回 tree snippet，等文件IO完成后再统一处理
         }
 
-        // 2) 重新生成所有文件 snippet
-        SnippetManager::add_files_snippet(state.clone(), all_paths).await?;
+        // 2) 读取文件IO (锁外)
+        let mut new_snips = Vec::with_capacity(all_paths.len());
+        for f in &all_paths { // Borrow all_paths
+            let content = fs::read_to_string(f).await.unwrap_or_default();
+            let snippet = generate_single_file_snippet(f, &content, 0);
+            new_snips.push((f.clone(), snippet)); // Clone path here
+        }
 
-        // 3) 更新项目树 (确保总是执行，即使之前没有树)
-        SnippetManager::update_project_tree_snippet(state.clone(), ignore_config)?;
+        // 3) 更新项目树 (同样可能耗时，锁外执行，但目前是同步函数)
+        //    为了简化，先在锁外生成树文本和 snippet
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let tree_txt = generate_project_tree_string(&current_dir, ignore_config)
+            .unwrap_or_else(|e| {
+                log::error!("生成项目树失败: {:?}", e);
+                "".to_string()
+            });
+        let tree_snippet = generate_single_file_snippet(Path::new(PROJECT_TREE_VIRTUAL_PATH), &tree_txt, 0);
 
-        // 4) rebuild & recalc
-        SnippetManager::rebuild_and_recalc(state)?;
+        // 4) 上锁一次性写回所有 snippets (包括新的项目树)
+        {
+            let mut st = state.lock().unwrap();
+            for (path, snip) in new_snips {
+                st.partial_docs.insert(path, snip);
+            }
+            // 写入新的或恢复的树 snippet
+            st.partial_docs.insert(PathBuf::from(PROJECT_TREE_VIRTUAL_PATH), tree_snippet);
+        }
+
+        // 5) rebuild & recalc (锁内)
+        Self::rebuild_and_recalc(state)?;
 
         Ok(())
     }
