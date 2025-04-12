@@ -184,16 +184,141 @@
 ### 主要工作内容
 
 1. **XML 生成 (core/xml.rs)**  
-   - 使用 `quick-xml` 或其它 XML 库来组装：  
+   - 使用 `quick-xml` 或其它 XML 库来组装。<documents>文档根标签，<document>代表一个文件，它有一个属性index表示这个文件的序号。<source>代表文件路径，<document_content>代表文件内容。其中`project-tree-structure.txt`是个虚拟文件，它是整个项目文件的目录结构，采用树状格式打印输出。示例如下：  
      ```xml
-     <files>
-       <file path="...">
-         <![CDATA[
-           file content
-         ]]>
-       </file>
-       ...
-     </files>
+     <documents>
+      <document index="1">
+      <source>project-tree-structure.txt</source>
+      <document_content>
+      hello-ratatui
+          ├── src
+          │   └── main.rs
+          ├── Cargo.lock
+          ├── Cargo.toml
+          ├── LICENSE
+          └── README.md
+      </document_content>
+      </document>
+      <document index="2">
+      <source>d:\workspace-playground\hello-ratatui\Cargo.toml</source>
+      <document_content>
+      [package]
+      name = "hello-ratatui"
+      version = "0.1.0"
+      description = "An example generated using the simple template"
+      authors = ["1WorldCapture <ll_nwpu@qq.com>"]
+      license = "MIT"
+      edition = "2021"
+
+      [dependencies]
+      crossterm = "0.28.1"
+      ratatui = "0.29.0"
+      color-eyre = "0.6.3"
+
+      </document_content>
+      </document>
+      <document index="3">
+      <source>d:\workspace-playground\hello-ratatui\src\main.rs</source>
+      <document_content>
+      use color_eyre::Result;
+      use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+      use ratatui::{
+          DefaultTerminal, Frame,
+          style::Stylize,
+          text::Line,
+          widgets::{Block, Paragraph},
+      };
+
+      fn main() -> color_eyre::Result<()> {
+          color_eyre::install()?;
+          let terminal = ratatui::init();
+          let result = App::new().run(terminal);
+          ratatui::restore();
+          result
+      }
+
+      /// The main application which holds the state and logic of the application.
+      #[derive(Debug, Default)]
+      pub struct App {
+          /// Is the application running?
+          running: bool,
+      }
+
+      impl App {
+          /// Construct a new instance of [`App`].
+          pub fn new() -> Self {
+              Self::default()
+          }
+
+          /// Run the application's main loop.
+          pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
+              self.running = true;
+              while self.running {
+                  terminal.draw(|frame| self.render(frame))?;
+                  self.handle_crossterm_events()?;
+              }
+              Ok(())
+          }
+
+          /// Renders the user interface.
+          ///
+          /// This is where you add new widgets. See the following resources for more information:
+          ///
+          /// - <https://docs.rs/ratatui/latest/ratatui/widgets/index.html>
+          /// - <https://github.com/ratatui/ratatui/tree/main/ratatui-widgets/examples>
+          fn render(&mut self, frame: &mut Frame) {
+              let title = Line::from("Ratatui Simple Template")
+                  .bold()
+                  .blue()
+                  .centered();
+              let text = "Hello, Ratatui!\n\n\
+                  Created using https://github.com/ratatui/templates\n\
+                  Press `Esc`, `Ctrl-C` or `q` to stop running.";
+              frame.render_widget(
+                  Paragraph::new(text)
+                      .block(Block::bordered().title(title))
+                      .centered(),
+                  frame.area(),
+              )
+          }
+
+          /// Reads the crossterm events and updates the state of [`App`].
+          ///
+          /// If your application needs to perform work in between handling events, you can use the
+          /// [`event::poll`] function to check if there are any events available with a timeout.
+          fn handle_crossterm_events(&mut self) -> Result<()> {
+              match event::read()? {
+                  // it's important to check KeyEventKind::Press to avoid handling key release events
+                  Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key_event(key),
+                  Event::Mouse(_) => {}
+                  Event::Resize(_, _) => {}
+                  _ => {}
+              }
+              Ok(())
+          }
+
+          /// Handles the key events and updates the state of [`App`].
+          fn on_key_event(&mut self, key: KeyEvent) {
+              match (key.modifiers, key.code) {
+                  (_, KeyCode::Esc | KeyCode::Char('q'))
+                  | (KeyModifiers::CONTROL, KeyCode::Char('c') | KeyCode::Char('C')) => self.quit(),
+                  // Add other key handlers here.
+                  _ => {}
+              }
+          }
+
+          /// Set running to false to quit the application.
+          fn quit(&mut self) {
+              self.running = false;
+          }
+      }
+
+      </document_content>
+      </document>
+      </documents>
+      <instruction>
+
+      </instruction>
      ```
    - 如果文件过多，务必考虑内存消耗，可以先一次性构建字符串（小规模），或分批处理。  
    - 若需要对不同文件类型生成不同的节点结构，也可在此扩展。  

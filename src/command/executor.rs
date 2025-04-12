@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use log::info; // 用于记录状态更新
 
-use crate::{app::state::AppState, command::definition::Command, core::{files, tokenizer}, error::AppError};
+use crate::{app::state::AppState, command::definition::Command, core::{files, tokenizer, xml, clipboard}, error::AppError};
 
 pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), AppError> {
     match cmd {
@@ -62,16 +62,45 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
         }
 
         Command::Copy => {
-            println!("(占位) 执行 /copy. 将把XML复制到剪贴板...");
-            // 这里暂不实现复制XML的逻辑
+            // 核心实现：读取所有选中文件 => 生成XML => 复制到剪贴板
+            info!("执行 /copy");
+
+            // 1. 收集当前选中文件 (锁 state)
+            let all_files: Vec<PathBuf> = {
+                let st = state.lock().unwrap();
+                if st.selected_paths.is_empty() {
+                    println!("(提示) 当前未选中文件，无法复制空XML。");
+                    return Ok(());
+                }
+                st.selected_paths.iter().cloned().collect()
+            };
+
+            // 2. 生成 XML (异步)
+            info!("  -> 开始生成包含 {} 个文件的 XML...", all_files.len());
+            let xml_str = xml::generate_xml(&all_files).await?;
+            info!("  -> XML 生成完毕，长度: {}", xml_str.len());
+
+            // 3. 复制到剪贴板 (同步API，可能快)
+            info!("  -> 尝试复制到剪贴板...");
+            match clipboard::copy_to_clipboard(&xml_str) {
+                Ok(_) => {
+                    println!("已将选中文件的XML复制到剪贴板。");
+                    info!("  -> 复制成功!");
+                }
+                Err(e) => {
+                    eprintln!("复制到剪贴板失败: {}", e);
+                    // 返回错误，让 REPL 知道命令执行失败
+                    return Err(e);
+                }
+            }
         }
 
         Command::Help => {
             println!("可用命令：");
             println!("  /add <path>      选中文件或文件夹");
             println!("  /remove <path>   移除已选文件或文件夹");
-            println!("  /context         查看当前选中的文件和目录");
-            println!("  /copy            将选中内容打包为XML并复制到剪贴板 (尚未实现)");
+            println!("  /context         查看当前选中的文件和目录 (包括文件数和 Token 数)");
+            println!("  /copy            将选中内容打包为 XML 并复制到剪贴板");
             println!("  /help            查看帮助");
             println!("  /quit            退出");
         }
