@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
@@ -7,97 +7,102 @@ use super::ignore_rules::IgnoreConfig;
 
 /// 基于 ignore_rules::IgnoreConfig 和 .gitignore 等规则生成项目树字符串
 pub fn generate_project_tree_string(root: &Path, ignore_config: &IgnoreConfig) -> Result<String, AppError> {
+    // 1) 使用 ignore_config.build_walker 收集所有符合规则的条目
+    let mut entries = Vec::new();
+    let walker = ignore_config.build_walker(root).build();
+
+    for result in walker {
+        let entry = result.map_err(|e|
+            AppError::General(anyhow!("项目树扫描失败: {:?}", e))
+        )?;
+        // 只收集深度大于0的，根目录后面单独处理
+        if entry.depth() > 0 {
+             entries.push(entry);
+        }
+    }
+
+    // 2) 构建一个 parent -> [children] 的映射，用以表示层级
+    //    这里用 BTreeMap 方便后续稳定排序 (按路径排序)
+    let mut children_map: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
+    // 同时记录哪些路径本身也在列表中 (主要为了判断子节点是否是目录且被扫描到)
+    let mut is_entry_in_list = BTreeMap::new();
+
+    // 插入根目录本身，以启动 DFS
+    is_entry_in_list.insert(root.to_path_buf(), 0); // depth 0
+
+    for e in &entries {
+        let path = e.path().to_path_buf();
+        let depth = e.depth();
+        is_entry_in_list.insert(path.clone(), depth);
+
+        if depth > 0 { // 确保 parent 不是根目录自身
+            if let Some(parent) = path.parent() {
+                // 只有当 parent 也在扫描结果中 (或 parent 是 root) 时才添加
+                // 这确保我们不会为被忽略的目录添加子节点
+                if parent == root || is_entry_in_list.contains_key(parent) {
+                     children_map.entry(parent.to_path_buf()).or_default().push(path);
+                }
+            }
+        }
+    }
+
+    // 3) 对每个 parent 的子列表进行排序
+    for (_k, v) in children_map.iter_mut() {
+        v.sort();
+    }
+
+    // 4) 递归构造树状输出
     let mut lines = Vec::new();
 
+    // 确认 root 的名字
     let root_name = root.file_name()
         .map(|os| os.to_string_lossy().to_string())
         .unwrap_or_else(|| root.display().to_string());
     lines.push(root_name);
 
-    // 使用 ignore_config 创建 walker，它将处理忽略规则
-    let walker_for_build = ignore_config.build_walker(root).build();
+    // 定义一个递归函数
+    fn dfs_build(
+        current: &PathBuf,
+        prefix: String,
+        lines: &mut Vec<String>,
+        children_map: &BTreeMap<PathBuf, Vec<PathBuf>>,
+        // is_entry_in_list: &BTreeMap<PathBuf, usize>, // 不需要此参数，map里有就说明被扫描
+    ) {
+        // 拿到此路径的子列表
+        let children = match children_map.get(current) {
+            Some(c) => c,
+            None => return, // 没有子节点
+        };
 
-    // 第一次：收集每个目录的子节点，并计算每个深度的最后条目
-    let mut dir_children: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
-    let mut last_entry_at_depth: HashMap<usize, PathBuf> = HashMap::new();
+        let total = children.len();
+        for (i, child) in children.iter().enumerate() {
+            let is_last = i == total - 1;
+            let branch = if is_last { "└── " } else { "├── " };
 
-    // 需要再次构建 walker 来迭代，因为 walker 不能被克隆或重置
-    for entry_result in ignore_config.build_walker(root).build() {
-        match entry_result {
-            Ok(entry) => {
-                let path = entry.path().to_path_buf();
-                let depth = entry.depth();
-                if depth > 0 {
-                    if let Some(parent) = path.parent() {
-                        dir_children.entry(parent.to_path_buf()).or_default().push(path);
-                    }
-                }
+            let name = child.file_name()
+                .map(|os| os.to_string_lossy().to_string())
+                .unwrap_or_else(|| child.display().to_string());
+
+            let line = format!("{}{}{}", prefix, branch, name);
+            lines.push(line);
+
+            // 如果 child 也是一个目录 (存在于 children_map 的 key 中)，则继续递归
+            if children_map.contains_key(child) {
+                // 继续向下构造
+                let ext_prefix = if is_last {
+                    format!("{}    ", prefix) // 最后一个用 4空格
+                } else {
+                    format!("{}│   ", prefix) // 不是最后一个用 "│   "
+                };
+                dfs_build(child, ext_prefix, lines, children_map);
             }
-            Err(err) => return Err(AppError::General(anyhow!("Walk error during collection: {}", err))),
         }
     }
 
-    // 对每个目录的子条目排序，并确定最后一个条目
-    for (parent_path, children) in dir_children.iter_mut() {
-        children.sort();
-        if let Some(last_child) = children.last() {
-            // 深度应该是父目录的深度 + 1。父目录的深度可以通过其路径中的组件数计算
-            // 根目录 depth 0, 其子节点 depth 1.
-            // 父目录的深度是 path.ancestors().count() - 1 (减去自身)
-            // 这里使用 parent_path.ancestors().count() 来近似父目录的深度(相对于根目录的层级)
-            // 注意：根目录的直接子项深度为 1
-             let parent_depth = parent_path.strip_prefix(root).map_or(0, |p| p.components().count());
-             last_entry_at_depth.insert(parent_depth + 1, last_child.clone());
-        }
-    }
+    // 5) 调用 DFS，从 root(深度0)开始
+    let root_key = root.to_path_buf();
+    dfs_build(&root_key, "".to_string(), &mut lines, &children_map);
 
-
-    // 第二次：使用 walker_for_build 构造输出字符串
-    for result in walker_for_build {
-        match result {
-            Ok(entry) => {
-                let path = entry.path();
-                let depth = entry.depth();
-
-                if depth == 0 { // 跳过根目录本身
-                    continue;
-                }
-
-                let mut prefix = String::new();
-                for i in 1..depth {
-                    // 检查当前深度 i 是否在其祖先链上的某个最后条目的路径上
-                    // 如果 i 深度对应的父路径是其所在层级的最后一个条目，则用空格，否则用 '|'
-                    // 我们需要找到深度为 i 的祖先路径
-                    let ancestor_at_i = path.ancestors().nth(depth - i).unwrap_or(root);
-                    let parent_of_ancestor_at_i = ancestor_at_i.parent().unwrap_or(root);
-                    let parent_depth = parent_of_ancestor_at_i.strip_prefix(root).map_or(0, |p| p.components().count());
-
-                    // 检查深度为 i 的祖先是否是其父级（深度 i-1）的最后一个子节点
-                    let is_ancestor_last = last_entry_at_depth.get(&(parent_depth + 1))
-                                        .map_or(false, |last| last == ancestor_at_i);
-
-                    if is_ancestor_last {
-                         prefix.push_str("    "); // 在最后一个分支下
-                    } else {
-                         prefix.push_str("│   "); // 不在最后一个分支下
-                    }
-                }
-
-                // 判断当前条目自身是否是其父目录的最后一个子节点
-                let is_last = last_entry_at_depth.get(&depth)
-                                 .map_or(false, |last| last == path);
-
-                let branch = if is_last { "└── " } else { "├── " };
-
-                let name = path.file_name()
-                    .map(|os| os.to_string_lossy().to_string())
-                    .unwrap_or_else(|| path.display().to_string());
-
-                lines.push(format!("{}{}{}", prefix, branch, name));
-            }
-            Err(err) => return Err(AppError::General(anyhow!("Walk error during build: {}", err))),
-        }
-    }
-
+    // 6) 拼装结果
     Ok(lines.join("\n"))
 } 
