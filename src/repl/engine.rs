@@ -270,7 +270,7 @@ impl ReplEngine {
                     };
                     if editor_mode == ReplEditorMode::MultiLine {
                          // 在多行模式下按 Ctrl+C/D，应该取消编辑并返回单行模式
-                         println!("(提示) 已取消多行编辑。");
+                         println!("(Note) Multiline editing cancelled.");
                          self.exit_multiline_mode();
                          // 不退出程序，继续循环
                     } else {

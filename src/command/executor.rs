@@ -62,21 +62,21 @@ pub async fn execute(
 ) -> Result<(), AppError> {
     let ignore_config = IgnoreConfig::default();
 
-    // [ADDED] 先检查当前模式和命令的匹配性
+    // [ADDED] Check the compatibility between current mode and command
     let current_mode = {
         let st = state.lock().unwrap();
         st.mode.clone()
     };
 
-    // [MODIFIED] 对 Unknown 命令特殊处理，直接在 match 之前提示
+    // [MODIFIED] Handle Unknown command specially, prompt before match
     if let Command::Unknown(u) = &cmd {
-        println!("未知命令: {}", u);
+        println!("Unknown command: {}", u);
         return Ok(());
     }
 
-    // [MODIFIED] 对其他命令进行有效性检查
+    // [MODIFIED] Check validity of other commands
     if !is_command_valid_in_mode(&cmd, &current_mode) {
-        // 获取命令的简单名称用于打印
+        // Get simple command name for printing
         let cmd_name = match &cmd {
              Command::Add(_) => "/add",
              Command::Remove(_) => "/remove",
@@ -87,20 +87,20 @@ pub async fn execute(
              Command::Quit => "/quit",
              Command::Mode(_) => "/mode",
              Command::Prompt => "/prompt",
-             Command::AppendPromptText(_) => "(文本输入)",
+             Command::AppendPromptText(_) => "(text input)",
              Command::ResetPrompt => "/resetprompt",
-             Command::Unknown(_) => "未知", // 理论上不会到这里
+             Command::Unknown(_) => "unknown",
         };
-        println!("(提示) 命令 {} 在 {:?} 模式不可用!", cmd_name, current_mode);
+        println!("(Note) Command {} is not available in {:?} mode!", cmd_name, current_mode);
         return Ok(()); 
     }
 
     match cmd {
         Command::Add(path) => {
-            info!("执行 /add: {:?}", path);
+            info!("Executing /add: {:?}", path);
 
             let scanned = files_scanner::scan_dir(&path, &ignore_config).await?;
-            info!("  -> 扫描到 {} 个文件", scanned.len());
+            info!("  -> Scanned {} files", scanned.len());
 
             let num_added = {
                 let mut st = state.lock().unwrap();
@@ -110,7 +110,7 @@ pub async fn execute(
                 }
                 let final_count = st.selected_paths.len();
                 st.file_count = final_count;
-                info!("  -> selected_paths 从 {} 增到 {}", init_count, final_count);
+                info!("  -> selected_paths increased from {} to {}", init_count, final_count);
                 final_count - init_count
             };
 
@@ -119,15 +119,15 @@ pub async fn execute(
                 SnippetManager::update_project_tree_snippet(state.clone(), &ignore_config)?;
                 SnippetManager::rebuild_and_recalc(state.clone())?;
             } else {
-                info!("  -> 没有新文件被添加，跳过 snippet 更新");
+                info!("  -> No new files added, skipping snippet update");
             }
         }
 
         Command::Remove(path) => {
-            info!("执行 /remove: {:?}", path);
+            info!("Executing /remove: {:?}", path);
 
             let scanned = files_scanner::scan_dir(&path, &ignore_config).await?;
-            info!("  -> 扫描到 {} 个文件 (待移除)", scanned.len());
+            info!("  -> Scanned {} files (to be removed)", scanned.len());
 
             let num_removed = {
                 let mut st = state.lock().unwrap();
@@ -138,7 +138,7 @@ pub async fn execute(
                 }
                 let final_count = st.selected_paths.len();
                 st.file_count = final_count;
-                info!("  -> selected_paths 从 {} 减到 {}", init_count, final_count);
+                info!("  -> selected_paths decreased from {} to {}", init_count, final_count);
                 init_count - final_count
             };
 
@@ -146,21 +146,21 @@ pub async fn execute(
                 SnippetManager::update_project_tree_snippet(state.clone(), &ignore_config)?;
                 SnippetManager::rebuild_and_recalc(state.clone())?;
             } else {
-                info!("  -> 没有文件被移除，跳过 snippet 更新");
+                info!("  -> No files removed, skipping snippet update");
             }
         }
 
         Command::ShowContext => {
             let st = state.lock().unwrap();
-            println!("当前 file_count={}, token_count={}", st.file_count, st.token_count);
-            println!("已选文件列表:");
+            println!("Current file_count={}, token_count={}", st.file_count, st.token_count);
+            println!("Selected files:");
             for p in &st.selected_paths {
                 println!(" - {:?}", p);
             }
         }
 
         Command::Copy => {
-            info!("执行 /copy (全量刷新)");
+            info!("Executing /copy (full refresh)");
 
             let paths: Vec<PathBuf> = {
                 let st = state.lock().unwrap();
@@ -188,13 +188,13 @@ pub async fn execute(
             };
 
             match clipboard::copy_to_clipboard(&xml_to_copy) {
-                Ok(_) => println!("(提示) 已将选中的内容(含项目树 + instruction)复制到剪贴板!"),
-                Err(e) => eprintln!("复制到剪贴板失败: {:?}", e),
+                Ok(_) => println!("(Note) Content (including project tree + instruction) has been copied to clipboard!"),
+                Err(e) => eprintln!("Failed to copy to clipboard: {:?}", e),
             }
         }
 
         Command::Reset => {
-            info!("执行 /reset");
+            info!("Executing /reset");
             let mut st = state.lock().unwrap();
             st.selected_paths.clear();
             st.file_count = 0;
@@ -203,48 +203,46 @@ pub async fn execute(
             st.cached_xml.clear();
             st.prompt_text.clear();
 
-            info!("  -> 已清空所有上下文 (files, partial_docs, token_count, prompt_text)");
+            info!("  -> All context cleared (files, partial_docs, token_count, prompt_text)");
         }
 
         Command::Help => {
-            // [MODIFIED] 不同模式下只显示对应命令，并添加对齐的解释
+            // [MODIFIED] Show commands for different modes with aligned descriptions
             let st = state.lock().unwrap();
             let mode = st.mode.clone();
             drop(st); // Release the lock explicitly
 
-            // [ADDED] 定义对齐宽度
+            // [ADDED] Define alignment width
             let width = 25;
 
             match mode {
                 ReplMode::Manual => {
-                    println!("可用命令(Manual模式):");
-                    // [MODIFIED] 直接将参数传递给 println! 进行格式化
-                    println!("  {:<width$} - {}", "/add <path>", "添加文件或目录到上下文", width=width);
-                    println!("  {:<width$} - {}", "/remove <path>", "从上下文中移除文件或目录", width=width);
-                    println!("  {:<width$} - {}", "/context", "显示当前上下文信息 (文件数, token数)", width=width);
-                    println!("  {:<width$} - {}", "/copy", "将当前上下文(含项目树和提示词)复制到剪贴板", width=width);
-                    println!("  {:<width$} - {}", "/reset", "清空所有上下文和提示词", width=width);
-                    println!("  {:<width$} - {}", "/mode [manual|prompt]", "查看或切换模式", width=width);
-                    println!("  {:<width$} - {}", "/help", "显示此帮助信息", width=width);
-                    println!("  {:<width$} - {}", "/quit", "退出程序", width=width);
+                    println!("Available commands (Manual mode):");
+                    println!("  {:<width$} - {}", "/add <path>", "Add files or directories to context", width=width);
+                    println!("  {:<width$} - {}", "/remove <path>", "Remove files or directories from context", width=width);
+                    println!("  {:<width$} - {}", "/context", "Show current context info (file count, token count)", width=width);
+                    println!("  {:<width$} - {}", "/copy", "Copy current context (with project tree and prompt) to clipboard", width=width);
+                    println!("  {:<width$} - {}", "/reset", "Clear all context and prompt", width=width);
+                    println!("  {:<width$} - {}", "/mode [manual|prompt]", "View or switch modes", width=width);
+                    println!("  {:<width$} - {}", "/help", "Show this help message", width=width);
+                    println!("  {:<width$} - {}", "/quit", "Exit program", width=width);
                 }
                 ReplMode::Prompt => {
-                    println!("可用命令(Prompt模式):");
-                    // [MODIFIED] 直接将参数传递给 println! 进行格式化
-                    println!("  {:<width$} - {}", "/mode [manual|prompt]", "查看或切换模式", width=width);
-                    println!("  {:<width$} - {}", "/prompt", "查看当前累积的提示词", width=width);
-                    println!("  {:<width$} - {}", "/context", "显示当前上下文信息 (文件数, token数)", width=width);
-                    println!("  {:<width$} - {}", "/copy", "将当前上下文(含项目树和提示词)复制到剪贴板", width=width);
-                    println!("  {:<width$} - {}", "/help", "显示此帮助信息", width=width);
-                    println!("  {:<width$} - {}", "/quit", "退出程序", width=width);
-                    println!("\n在 prompt 模式下:");
-                    println!("  直接输入内容(不以'/'开头)会被追加到提示词中。");
+                    println!("Available commands (Prompt mode):");
+                    println!("  {:<width$} - {}", "/mode [manual|prompt]", "View or switch modes", width=width);
+                    println!("  {:<width$} - {}", "/prompt", "View current accumulated prompt", width=width);
+                    println!("  {:<width$} - {}", "/context", "Show current context info (file count, token count)", width=width);
+                    println!("  {:<width$} - {}", "/copy", "Copy current context (with project tree and prompt) to clipboard", width=width);
+                    println!("  {:<width$} - {}", "/help", "Show this help message", width=width);
+                    println!("  {:<width$} - {}", "/quit", "Exit program", width=width);
+                    println!("\nIn prompt mode:");
+                    println!("  Direct input (not starting with '/') will be appended to the prompt.");
                 }
             }
         }
 
         Command::Quit => {
-            println!("(提示) 即将退出...");
+            println!("(Note) Exiting...");
         }
 
         Command::Mode(opt) => {
@@ -252,43 +250,43 @@ pub async fn execute(
             match opt {
                 None => {
                     match st.mode {
-                        ReplMode::Manual => println!("当前模式: manual"),
-                        ReplMode::Prompt => println!("当前模式: prompt"),
+                        ReplMode::Manual => println!("Current mode: manual"),
+                        ReplMode::Prompt => println!("Current mode: prompt"),
                     }
                 }
                 Some(m) => {
                     let mode_str = m.to_lowercase();
                     if mode_str == "manual" {
                         st.mode = ReplMode::Manual;
-                        println!("已切换到 manual 模式");
+                        println!("Switched to manual mode");
                     } else if mode_str == "prompt" {
                         st.mode = ReplMode::Prompt;
-                        println!("已切换到 prompt 模式");
+                        println!("Switched to prompt mode");
                     } else {
-                        println!("未知模式: {} (可用: manual, prompt)", m);
+                        println!("Unknown mode: {} (available: manual, prompt)", m);
                     }
                 }
             }
         }
 
         Command::Prompt => {
-            // 如果当前是 Manual 模式，自动切换到 Prompt 模式
+            // If currently in Manual mode, automatically switch to Prompt mode
             {
                 let mut st = state.lock().unwrap();
                 if st.mode == ReplMode::Manual {
-                    println!("(提示) 当前在 manual 模式，自动切换到 prompt 模式...");
+                    println!("(Note) Currently in manual mode, automatically switching to prompt mode...");
                     st.mode = ReplMode::Prompt;
                 }
             }
-            // 进入多行编辑模式
+            // Enter multiline edit mode
             engine.enter_multiline_mode()?;
-            println!("(提示) 已进入多行编辑模式，输入 :submit 并回车即可完成编辑。");
+            println!("(Note) Entering multiline edit mode. Type :submit and press Enter to finish editing.");
         }
 
         Command::ResetPrompt => {
             let mut st = state.lock().unwrap();
             st.prompt_text.clear();
-            println!("(提示) prompt缓存已清空。");
+            println!("(Note) Prompt cache has been cleared.");
         }
 
         Command::AppendPromptText(line) => {
@@ -298,9 +296,9 @@ pub async fn execute(
                     st.prompt_text.push('\n');
                 }
                 st.prompt_text.push_str(&line);
-                println!("(提示) 已添加到提示词");
+                println!("(Note) Added to prompt");
             } else {
-                eprintln!("内部错误：尝试在非 prompt 模式下追加提示词。");
+                eprintln!("Internal error: Attempting to append prompt text in non-prompt mode.");
             }
         }
         // [ADDED] Make sure all command variants are handled or explicitly ignored
