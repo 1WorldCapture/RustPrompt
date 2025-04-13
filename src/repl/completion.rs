@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use log::{debug, info}; // 导入日志宏
 use std::sync::{Arc, Mutex}; // <-- Import Mutex
-use crate::app::state::AppState; // <-- Import AppState
+use crate::app::state::{AppState, ReplMode}; // <-- Import AppState and ReplMode
 use crate::core::ignore_rules::IgnoreConfig; // 引入 IgnoreConfig
 
 /// 补全器，支持命令和路径
@@ -60,12 +60,39 @@ impl Completer for CmdPromptCompleter {
 }
 
 impl CmdPromptCompleter {
-    /// 补全命令名
+    /// [MODIFIED] 补全命令名时，根据当前模式只列出允许的命令
     fn suggest_commands(&self, input: &str, pos: usize) -> Vec<Suggestion> {
-        let commands = vec!["/add", "/remove", "/context", "/copy", "/help", "/quit"];
-        debug!("suggest_commands: input='{}'", input);
+        // [ADDED] 根据当前模式，列出有效命令
+        let mode = {
+            let st = self.app_state.lock().unwrap();
+            st.mode.clone()
+        };
+
+        let commands = match mode {
+            ReplMode::Manual => vec![
+                "/add", 
+                "/remove", 
+                "/context", 
+                "/copy", 
+                "/reset",
+                "/mode", 
+                "/help", 
+                "/quit",
+            ],
+            ReplMode::Prompt => vec![
+                "/mode", 
+                "/prompt", 
+                "/context", 
+                "/copy", 
+                "/help", 
+                "/quit",
+            ],
+        };
+
+        debug!("suggest_commands: input='{}', mode={:?}", input, mode);
+
         let suggestions: Vec<Suggestion> = commands
-            .iter()
+            .into_iter() // Use into_iter() as we own the Vec now
             .filter(|cmd| cmd.starts_with(input))
             .map(|cmd| {
                 debug!("  -> 建议: {}", cmd);
@@ -75,7 +102,7 @@ impl CmdPromptCompleter {
                     extra: None,
                     style: None,
                     // 替换从 input 的开头到 pos
-                    span: Span { start: 0, end: pos }, 
+                    span: Span { start: 0, end: pos },
                     append_whitespace: true, // 补全命令后加空格
                 }
             })

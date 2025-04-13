@@ -12,8 +12,84 @@ use crate::{
     error::AppError,
 };
 
+// [ADDED] 定义一个函数，用于判断给定 Command 是否在指定模式下可用
+fn is_command_valid_in_mode(cmd: &Command, mode: &ReplMode) -> bool {
+    match mode {
+        ReplMode::Manual => {
+            match cmd {
+                Command::Add(_) 
+                | Command::Remove(_) 
+                | Command::ShowContext
+                | Command::Copy
+                | Command::Reset
+                | Command::Help
+                | Command::Quit
+                | Command::Mode(_) => true,
+
+                // prompt 模式下特有的命令在 manual 模式无效
+                Command::Prompt
+                | Command::AppendPromptText(_)
+                // [MODIFIED] Unknown 应该在任何模式下都"无效"（因为它不是一个已知命令，这里返回 false 来避免执行）
+                | Command::Unknown(_) => false, 
+            }
+        }
+        ReplMode::Prompt => {
+            match cmd {
+                // prompt 模式可用
+                Command::Mode(_)
+                | Command::Prompt
+                | Command::ShowContext
+                | Command::Copy
+                | Command::Help
+                | Command::Quit
+                // prompt模式下 AppendPromptText 是自动添加行
+                | Command::AppendPromptText(_) => true,
+
+                // manual 模式才有的命令在 prompt 模式无效
+                Command::Add(_)
+                | Command::Remove(_)
+                | Command::Reset
+                // [MODIFIED] Unknown 在 prompt 模式也无效
+                | Command::Unknown(_) => false, 
+            }
+        }
+    }
+}
+
 pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), AppError> {
     let ignore_config = IgnoreConfig::default();
+
+    // [ADDED] 先检查当前模式和命令的匹配性
+    let current_mode = {
+        let st = state.lock().unwrap();
+        st.mode.clone()
+    };
+
+    // [MODIFIED] 对 Unknown 命令特殊处理，直接在 match 之前提示
+    if let Command::Unknown(u) = &cmd {
+        println!("未知命令: {}", u);
+        return Ok(());
+    }
+
+    // [MODIFIED] 对其他命令进行有效性检查
+    if !is_command_valid_in_mode(&cmd, &current_mode) {
+        // 获取命令的简单名称用于打印
+        let cmd_name = match &cmd {
+             Command::Add(_) => "/add",
+             Command::Remove(_) => "/remove",
+             Command::ShowContext => "/context",
+             Command::Copy => "/copy",
+             Command::Reset => "/reset",
+             Command::Help => "/help",
+             Command::Quit => "/quit",
+             Command::Mode(_) => "/mode",
+             Command::Prompt => "/prompt",
+             Command::AppendPromptText(_) => "(文本输入)",
+             Command::Unknown(_) => "未知", // 理论上不会到这里
+        };
+        println!("(提示) 命令 {} 在 {:?} 模式不可用!", cmd_name, current_mode);
+        return Ok(()); 
+    }
 
     match cmd {
         Command::Add(path) => {
@@ -127,26 +203,44 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
         }
 
         Command::Help => {
-            println!("可用命令:");
-            println!("  /add <path>");
-            println!("  /remove <path>");
-            println!("  /context");
-            println!("  /copy");
-            println!("  /reset");
-            println!("  /mode [manual|prompt]  - 查看或切换模式");
-            println!("  /prompt              - 查看当前提示词 (prompt模式下生效)");
-            println!("  /help");
-            println!("  /quit");
-            println!("\n在 prompt 模式下:");
-            println!("  直接输入内容会被追加到提示词中。");
+            // [MODIFIED] 不同模式下只显示对应命令，并添加对齐的解释
+            let st = state.lock().unwrap();
+            let mode = st.mode.clone();
+            drop(st); // Release the lock explicitly
+
+            // [ADDED] 定义对齐宽度
+            let width = 25;
+
+            match mode {
+                ReplMode::Manual => {
+                    println!("可用命令(Manual模式):");
+                    // [MODIFIED] 直接将参数传递给 println! 进行格式化
+                    println!("  {:<width$} - {}", "/add <path>", "添加文件或目录到上下文", width=width);
+                    println!("  {:<width$} - {}", "/remove <path>", "从上下文中移除文件或目录", width=width);
+                    println!("  {:<width$} - {}", "/context", "显示当前上下文信息 (文件数, token数)", width=width);
+                    println!("  {:<width$} - {}", "/copy", "将当前上下文(含项目树和提示词)复制到剪贴板", width=width);
+                    println!("  {:<width$} - {}", "/reset", "清空所有上下文和提示词", width=width);
+                    println!("  {:<width$} - {}", "/mode [manual|prompt]", "查看或切换模式", width=width);
+                    println!("  {:<width$} - {}", "/help", "显示此帮助信息", width=width);
+                    println!("  {:<width$} - {}", "/quit", "退出程序", width=width);
+                }
+                ReplMode::Prompt => {
+                    println!("可用命令(Prompt模式):");
+                    // [MODIFIED] 直接将参数传递给 println! 进行格式化
+                    println!("  {:<width$} - {}", "/mode [manual|prompt]", "查看或切换模式", width=width);
+                    println!("  {:<width$} - {}", "/prompt", "查看当前累积的提示词", width=width);
+                    println!("  {:<width$} - {}", "/context", "显示当前上下文信息 (文件数, token数)", width=width);
+                    println!("  {:<width$} - {}", "/copy", "将当前上下文(含项目树和提示词)复制到剪贴板", width=width);
+                    println!("  {:<width$} - {}", "/help", "显示此帮助信息", width=width);
+                    println!("  {:<width$} - {}", "/quit", "退出程序", width=width);
+                    println!("\n在 prompt 模式下:");
+                    println!("  直接输入内容(不以'/'开头)会被追加到提示词中。");
+                }
+            }
         }
 
         Command::Quit => {
             println!("(提示) 即将退出...");
-        }
-
-        Command::Unknown(u) => {
-            println!("未知命令: {}", u);
         }
 
         Command::Mode(opt) => {
@@ -191,9 +285,12 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
                 st.prompt_text.push_str(&line);
                 println!("(提示) 已添加到提示词");
             } else {
+                // This case should theoretically not be reached due to the check at the beginning
                 eprintln!("内部错误：尝试在非 prompt 模式下追加提示词。");
             }
         }
+        // [ADDED] Make sure all command variants are handled or explicitly ignored
+        Command::Unknown(_) => { /* Already handled earlier */ }
     }
 
     Ok(())
