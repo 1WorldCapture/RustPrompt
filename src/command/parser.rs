@@ -32,6 +32,7 @@ pub fn parse(input: &str) -> Result<Command, AppError> {
         "/reset" => Ok(Command::Reset),
         "/help" => Ok(Command::Help),
         "/quit" => Ok(Command::Quit),
+        "/resetprompt" => Ok(Command::ResetPrompt),
 
         "/mode" => {
             // /mode 后可能无参数 => 查看当前模式

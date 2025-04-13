@@ -1,10 +1,11 @@
 use std::sync::{Arc, Mutex};
 
 use reedline::{
-    ColumnarMenu, DefaultCompleter, Emacs, KeyCode, KeyModifiers, Reedline, ReedlineEvent, ReedlineMenu, Signal, 
+    ColumnarMenu, Emacs, KeyCode, KeyModifiers, Reedline, ReedlineEvent, ReedlineMenu, Signal, 
     default_emacs_keybindings, // 用于获取默认绑定
     MenuBuilder, // <--- 导入 MenuBuilder trait
-    Validator, ValidationResult // <--- 导入 Validator
+    Validator, ValidationResult, // <--- 导入 Validator
+    EditCommand,
 };
 use anyhow::Result;
 use log::debug; // <-- 导入 debug 宏
@@ -16,6 +17,7 @@ use crate::{
         prompt::CmdPrompt,
         completion::CmdPromptCompleter,
     },
+    error::AppError,
 };
 
 // /// 用于区分单行/多行  <-- 已移至 state.rs
@@ -30,23 +32,13 @@ pub struct SubmitValidator;
 
 impl Validator for SubmitValidator {
     fn validate(&self, content: &str) -> ValidationResult {
-        let lines: Vec<&str> = content.lines().collect();
-        if let Some(last_line) = lines.last() {
-            if last_line.trim() == ":submit" {
-                debug!("SubmitValidator: detected ':submit'. Returning Complete.");
-                // 最后一行是:submit => 提交
-                ValidationResult::Complete
-            } else {
-                debug!("SubmitValidator: last line is not ':submit'. Returning Incomplete.");
-                ValidationResult::Incomplete
-            }
+        if content.lines().last().map_or(false, |l| l.trim() == ":submit") {
+            ValidationResult::Complete
         } else {
-            debug!("SubmitValidator: content is empty. Returning Incomplete.");
             ValidationResult::Incomplete
         }
     }
 }
-
 
 pub struct ReplEngine {
     /// reedline 编辑器实例
@@ -106,53 +98,43 @@ impl ReplEngine {
         }
     }
 
-    /// [NEW] 进入多行模式 (修改 editor 配置)
-    fn enter_multiline_mode(&mut self) {
-        debug!("Entering multiline mode...");
-        { // 更新 AppState 中的模式
+    /// 进入多行编辑模式
+    pub fn enter_multiline_mode(&mut self) -> Result<(), AppError> {
+        // 更新 AppState.editor_mode
+        {
             let mut st = self.app_state.lock().unwrap();
             st.editor_mode = ReplEditorMode::MultiLine;
         }
 
+        // 准备 keybinding
         let mut kb = default_emacs_keybindings();
-        // 禁用 Tab 补全
+        // 禁用Tab
         kb.add_binding(
             KeyModifiers::NONE,
             KeyCode::Tab,
             ReedlineEvent::None,
         );
-        // Enter 键在多行模式下默认行为是插入换行 (InsertNewline)
-        // 这是因为 Validator 返回 Incomplete 时，默认绑定 SubmitOrInsertNewline 会选择 InsertNewline
+        let edit_mode = Box::new(Emacs::new(kb));
 
-        let edit_mode = Box::new(Emacs::new(kb)); // 多行模式仍然使用 Emacs 基础绑定
-
-        // 重新配置 editor, 设置 validator, 移除 completer/menu
+        // 重新创建 editor
         self.editor = Reedline::create()
             .with_edit_mode(edit_mode)
-            .with_validator(Box::new(SubmitValidator)) // 使用 :submit 检测器
-            // 多行模式下不需要命令或路径补全
-            .with_completer(Box::new(DefaultCompleter::new(vec![])))
-            // .with_menu(...) // 不需要菜单
-            // 没有 .with_multiline(), 依赖 validator
-            // 可以在这里设置历史记录，如果希望多行编辑也有历史的话
-            // .with_history(...) 
-            ;
-        
-        // 可以在这里加载当前的 prompt_text 到编辑缓冲区
-        let current_prompt = {
+            .with_validator(Box::new(SubmitValidator))
+            .with_completer(Box::new(CmdPromptCompleter {
+                app_state: self.app_state.clone(),
+            }));
+
+        // 读取已有 prompt_text
+        let existing_prompt = {
             let st = self.app_state.lock().unwrap();
             st.prompt_text.clone()
         };
-        if !current_prompt.is_empty() {
-             // 预填充编辑器内容
-             // 注意：预填充可能需要 Reedline 的特定 API 或技巧，
-             // 如果 editor.prefill_buffer() 之类的不存在，可能需要在 read_line 前设置
-             // 或者，如果 Reedline 不直接支持，就只能让用户自己粘贴了。
-             // 查阅 Reedline 文档，似乎没有直接预填充 API。
-             // 暂时让用户在新编辑器里编辑。
-            println!("(提示) 当前提示词内容:\n{}", current_prompt);
+        if !existing_prompt.is_empty() {
+            // 预填充编辑器缓冲区
+            self.editor.run_edit_commands(&[EditCommand::InsertString(existing_prompt)]);
         }
-        println!("(提示) 您已进入多行编辑模式。输入 ':submit' 并按 Enter 提交并退出。");
+
+        Ok(())
     }
 
     /// [NEW] 退出多行模式 (恢复单行配置)
@@ -199,37 +181,28 @@ impl ReplEngine {
 
             match sig {
                 Ok(Signal::Success(buffer)) => {
-                    let editor_mode = { // 获取当前编辑器模式
+                    // 检查是否在多行模式
+                    let is_multiline = {
                         let st = self.app_state.lock().unwrap();
-                        st.editor_mode
+                        st.editor_mode == ReplEditorMode::MultiLine
                     };
 
-                    // --- 处理多行模式下的提交 ---
-                    if editor_mode == ReplEditorMode::MultiLine {
-                        debug!("Multiline mode received success signal. Buffer:\n{}", buffer);
-                        // Validator 确保了这里 buffer 是 'Complete' 的，即以 :submit 结尾
+                    if is_multiline {
+                        // 处理多行编辑
                         let mut lines: Vec<&str> = buffer.lines().collect();
-                        if let Some(last_line) = lines.last() {
-                            if last_line.trim() == ":submit" {
-                                lines.pop(); // 移除最后一行 :submit
-                                debug!("Removed trailing ':submit' line.");
-                            } else {
-                                // 这理论上不应该发生，因为 Validator 保证了 :submit
-                                debug!("Warning: Multiline input completed but last line wasn't ':submit'. Buffer:\n{}", buffer);
+                        if let Some(last) = lines.last() {
+                            if last.trim() == ":submit" {
+                                lines.pop();
+                                let final_text = lines.join("\n");
+                                {
+                                    let mut st = self.app_state.lock().unwrap();
+                                    st.prompt_text = final_text;
+                                    println!("(提示) 多行编辑提交完毕，新的 prompt:\n{}", st.prompt_text);
+                                }
+                                self.exit_multiline_mode();
+                                continue;
                             }
                         }
-                        // [FIXED] 使用实际换行符连接
-                        let final_text = lines.join("\n"); // 使用实际换行符连接
-
-                        // 保存到 prompt_text
-                        {
-                            let mut st = self.app_state.lock().unwrap();
-                            st.prompt_text = final_text;
-                            println!("(提示) 多行编辑提交完毕。当前 prompt_text:\n{}", st.prompt_text);
-                        }
-                        // 恢复单行模式
-                        self.exit_multiline_mode();
-                        continue; // 进入下一轮循环，等待新输入
                     }
 
                     // --- 处理单行模式下的输入 ---
@@ -255,8 +228,8 @@ impl ReplEngine {
 
                     if is_prompt_input {
                         let cmd = Command::AppendPromptText(buffer);
-                        if let Err(e) = executor::execute(cmd, self.app_state.clone()).await {
-                            eprintln!("执行 append prompt text 命令时出错: {}", e);
+                        if let Err(e) = executor::execute(cmd, self.app_state.clone(), self).await {
+                            eprintln!("执行命令时出错: {}", e);
                         }
                         continue; // 跳过常规 parse()
                     }
@@ -270,12 +243,12 @@ impl ReplEngine {
                              if matches!(&cmd, Command::Prompt) && current_repl_mode == ReplMode::Prompt {
                                  debug!("Detected /prompt command in Prompt mode. Entering multiline edit.");
                                  // 不通过 executor 执行，直接在这里切换模式
-                                 self.enter_multiline_mode();
+                                 self.enter_multiline_mode()?;
                                  continue; // 进入下一轮循环，等待多行输入
                              }
 
                             // --- 对于其他命令，正常执行 ---
-                            if let Err(e) = executor::execute(cmd.clone(), self.app_state.clone()).await {
+                            if let Err(e) = executor::execute(cmd.clone(), self.app_state.clone(), self).await {
                                 eprintln!("执行命令时出错: {}", e);
                             }
                             // 特殊处理 Quit 命令以停止循环

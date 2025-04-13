@@ -10,6 +10,7 @@ use crate::{
     command::definition::Command,
     core::{files_scanner, ignore_rules::IgnoreConfig, clipboard},
     error::AppError,
+    repl::engine::ReplEngine,
 };
 
 // [ADDED] 定义一个函数，用于判断给定 Command 是否在指定模式下可用
@@ -24,39 +25,41 @@ fn is_command_valid_in_mode(cmd: &Command, mode: &ReplMode) -> bool {
                 | Command::Reset
                 | Command::Help
                 | Command::Quit
-                | Command::Mode(_) => true,
+                | Command::Mode(_)
+                | Command::ResetPrompt  // 允许在 Manual 模式下使用
+                | Command::Prompt  // 允许在 Manual 模式下使用
+                => true,
 
-                // prompt 模式下特有的命令在 manual 模式无效
-                Command::Prompt
-                | Command::AppendPromptText(_)
-                // [MODIFIED] Unknown 应该在任何模式下都"无效"（因为它不是一个已知命令，这里返回 false 来避免执行）
-                | Command::Unknown(_) => false, 
+                Command::AppendPromptText(_)
+                | Command::Unknown(_) => false,
             }
         }
         ReplMode::Prompt => {
             match cmd {
-                // prompt 模式可用
                 Command::Mode(_)
                 | Command::Prompt
                 | Command::ShowContext
                 | Command::Copy
                 | Command::Help
                 | Command::Quit
-                // prompt模式下 AppendPromptText 是自动添加行
-                | Command::AppendPromptText(_) => true,
+                | Command::AppendPromptText(_)
+                | Command::ResetPrompt  // 允许在 Prompt 模式下使用
+                => true,
 
-                // manual 模式才有的命令在 prompt 模式无效
                 Command::Add(_)
                 | Command::Remove(_)
                 | Command::Reset
-                // [MODIFIED] Unknown 在 prompt 模式也无效
-                | Command::Unknown(_) => false, 
+                | Command::Unknown(_) => false,
             }
         }
     }
 }
 
-pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), AppError> {
+pub async fn execute(
+    cmd: Command, 
+    state: Arc<Mutex<AppState>>,
+    engine: &mut ReplEngine,
+) -> Result<(), AppError> {
     let ignore_config = IgnoreConfig::default();
 
     // [ADDED] 先检查当前模式和命令的匹配性
@@ -85,6 +88,7 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
              Command::Mode(_) => "/mode",
              Command::Prompt => "/prompt",
              Command::AppendPromptText(_) => "(文本输入)",
+             Command::ResetPrompt => "/resetprompt",
              Command::Unknown(_) => "未知", // 理论上不会到这里
         };
         println!("(提示) 命令 {} 在 {:?} 模式不可用!", cmd_name, current_mode);
@@ -268,12 +272,23 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
         }
 
         Command::Prompt => {
-            let st = state.lock().unwrap();
-            if st.mode == ReplMode::Prompt {
-                println!("(提示) 当前 prompt_text:\n{}", st.prompt_text);
-            } else {
-                println!("(提示) /prompt 命令仅在 prompt 模式下查看提示词。当前为 manual 模式。");
+            // 如果当前是 Manual 模式，自动切换到 Prompt 模式
+            {
+                let mut st = state.lock().unwrap();
+                if st.mode == ReplMode::Manual {
+                    println!("(提示) 当前在 manual 模式，自动切换到 prompt 模式...");
+                    st.mode = ReplMode::Prompt;
+                }
             }
+            // 进入多行编辑模式
+            engine.enter_multiline_mode()?;
+            println!("(提示) 已进入多行编辑模式，输入 :submit 并回车即可完成编辑。");
+        }
+
+        Command::ResetPrompt => {
+            let mut st = state.lock().unwrap();
+            st.prompt_text.clear();
+            println!("(提示) prompt缓存已清空。");
         }
 
         Command::AppendPromptText(line) => {
@@ -285,7 +300,6 @@ pub async fn execute(cmd: Command, state: Arc<Mutex<AppState>>) -> Result<(), Ap
                 st.prompt_text.push_str(&line);
                 println!("(提示) 已添加到提示词");
             } else {
-                // This case should theoretically not be reached due to the check at the beginning
                 eprintln!("内部错误：尝试在非 prompt 模式下追加提示词。");
             }
         }

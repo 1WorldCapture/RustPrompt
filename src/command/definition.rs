@@ -20,4 +20,7 @@ pub enum Command {
 
     // 如果在 prompt 模式下输入普通行，会转换成此命令
     AppendPromptText(String),
+
+    // 新增: /resetprompt 命令
+    ResetPrompt,
 } 

@@ -11,7 +11,7 @@ pub enum ReplMode {
 }
 
 /// 用于区分 REPL 编辑器的状态
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ReplEditorMode {
     SingleLine,
     MultiLine,
@@ -40,7 +40,7 @@ pub struct AppState {
     /// prompt模式下收集到的提示词 (可多行或单行)
     pub prompt_text: String,
 
-    /// 当前 REPL 编辑器的模式 (单行/多行)
+    /// 编辑器模式：单行或多行
     pub editor_mode: ReplEditorMode,
 }
 
@@ -54,7 +54,7 @@ impl AppState {
             cached_xml: String::new(),
             mode: ReplMode::Manual,
             prompt_text: String::new(),
-            editor_mode: ReplEditorMode::SingleLine, // 默认是单行
+            editor_mode: ReplEditorMode::SingleLine,
         }
     }
 } 
